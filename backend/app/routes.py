@@ -177,7 +177,7 @@ async def generate(
                         for sc in saved_cards:
                             await db.refresh(sc)
                         # Re-emit complete event with DB card responses
-                        data["cards"] = [_card_to_response(sc).model_dump(by_alias=True) for sc in saved_cards]
+                        data["cards"] = [_card_to_response(sc).model_dump(mode="json", by_alias=True) for sc in saved_cards]
                         yield f"data: {_json.dumps(data)}\n\n"
                         continue
                 yield event_str
@@ -655,7 +655,7 @@ async def regenerate_from_document(
                         await db.commit()
                         for sc in saved_cards:
                             await db.refresh(sc)
-                        data["cards"] = [_card_to_response(sc).model_dump(by_alias=True) for sc in saved_cards]
+                        data["cards"] = [_card_to_response(sc).model_dump(mode="json", by_alias=True) for sc in saved_cards]
                         yield f"data: {_json.dumps(data)}\n\n"
                         continue
                 yield event_str
