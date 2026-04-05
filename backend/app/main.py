@@ -13,6 +13,9 @@ from .routes import router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .auth import APP_PASSWORD, SECRET_KEY
+    print(f"APP_PASSWORD loaded: {'yes' if APP_PASSWORD else 'NO - MISSING'}")
+    print(f"SECRET_KEY loaded: {'yes' if SECRET_KEY else 'NO - MISSING'}")
     await init_db()
     yield
 
