@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_URL || '/api'
+export const BASE = import.meta.env.VITE_API_URL || '/api'
+console.log('[api] BASE URL resolved to:', BASE)
 
 let _token = null
 

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import { Sparkles, BookOpen, BarChart3, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { setAuthToken } from '@/api'
+import { setAuthToken, BASE } from '@/api'
 import logo from '@/assets/psychomausi-logo.png'
 import CreatePage from './pages/CreatePage'
 import StudyPage from './pages/StudyPage'
@@ -22,7 +22,7 @@ export default function App() {
     const token = localStorage.getItem('auth_token')
     if (!token) { setAuthed(false); return }
     setAuthToken(token)
-    fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`${BASE}/auth/verify`, { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => { if (r.ok) { setAuthed(true) } else { localStorage.removeItem('auth_token'); setAuthToken(null); setAuthed(false) } })
       .catch(() => { setAuthed(false) })
   }, [])

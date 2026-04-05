@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Lock } from 'lucide-react'
+import { BASE } from '@/api'
 
 export default function LoginPage({ onLogin }) {
   const [password, setPassword] = useState('')
@@ -11,7 +12,7 @@ export default function LoginPage({ onLogin }) {
     setError('')
     setLoading(true)
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(`${BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
