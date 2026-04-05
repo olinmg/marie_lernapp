@@ -13,7 +13,22 @@ export const POSITIVE_QUOTES = [
   "You're a machine! A very cute, brilliant machine. 🤖❤️",
   "Is there anything you can't do? Keep crushing it! ✨",
   "Another correct answer! You're making me look bad. 😉",
-  "Right again! I'll be prepping the celebration dance. 💃"
+  "Right again! I'll be prepping the celebration dance. 💃",
+  "Okay wow, you really just did that. Legend status confirmed! 👑",
+  "I'm running out of compliments because you just keep getting them right! 🤯",
+  "Your study sessions are clearly paying off. Look at you shine! ☀️",
+  "Another one down! You're collecting correct answers like trophies. 🏅",
+  "At this rate you'll finish the exam in record time. Speed AND accuracy! ⏱️",
+  "Absolutely nailed it. I knew you would. I always know! 😌",
+  "You just answered that like it was nothing. Main character energy! 🎬",
+  "Correct again?! Okay, someone's been studying. I see you! 👀",
+  "That answer was pure perfection. Just like you! 🌸",
+  "You're on fire and I'm here for every second of it! 🔥",
+  "I genuinely love watching you succeed. Keep going, superstar! ⭐",
+  "The way your brain works is genuinely impressive. Never change! 🧬",
+  "Ding ding ding! Correct once again. You're unstoppable! 🛎️",
+  "If this exam were a game, you'd be winning by a landslide! 🎮",
+  "Your future self is going to be so grateful for this moment. Keep it up! 🔮"
 ];
 
 export const SUPPORTIVE_QUOTES = [
@@ -31,7 +46,22 @@ export const SUPPORTIVE_QUOTES = [
   "Don't let a few tricky questions dim your light. You're brilliant! 💖",
   "Roll your shoulders back, unclench your jaw. You're fine, I promise. 💆‍♀️",
   "It's okay to be annoyed, but remember how far you've come! 🌈",
-  "A minor setback for a major comeback. Next question, let's go! 🚀"
+  "A minor setback for a major comeback. Next question, let's go! 🚀",
+  "One wrong answer doesn't define you. You've worked way too hard for that! 💪",
+  "Hey, grab a snack. Your brain needs fuel and you deserve a treat. 🍫",
+  "Remember: you don't have to be perfect, just prepared. And you are! 📚",
+  "Shake your hands out, wiggle your fingers. Fresh start on the next one! 🤲",
+  "You've survived 100% of your worst study days. This one's no different. 🏆",
+  "I wish I could hug you right now. You're doing better than you think! 🤗",
+  "This question was tricky, not you. Big difference! 🧩",
+  "Put on your favorite song for 30 seconds. Reset and come back stronger! 🎵",
+  "You are literally the hardest-working person I know. Don't forget that. 💎",
+  "A wrong answer just means you won't get it wrong on the real exam. Silver lining! 🌤️",
+  "Stretch your neck, take a sip of water. You're doing incredible, I promise. 💧",
+  "Progress isn't always a straight line. You're still moving forward! 📈",
+  "The fact that you're still here studying says everything about you. So proud. 🥹",
+  "Hey, smile for me. Even a tiny one. You've got more in you than you know! 😊",
+  "Tough questions build tough graduates. You're forging steel right now! ⚒️"
 ];
 
 export const INTERMISSION_QUOTES = [
@@ -46,7 +76,19 @@ export const INTERMISSION_QUOTES = [
   "Time for a quick stretch! Reach for the sky, you beautiful academic weapon! ⚔️",
   "I am in awe of your work ethic. You are going to be so relieved when this is over. 🌅",
   "25 more steps towards absolute freedom. I'm cheering for you from the sidelines! 📣",
-  "Reward yourself with a little sip of something yummy. You've earned this pause! 🥤"
+  "Reward yourself with a little sip of something yummy. You've earned this pause! 🥤",
+  "Look how far you've come already! The hardest part is behind you. 🪜",
+  "Quick tip: close your eyes for 5 seconds and think about something that makes you happy. 🌻",
+  "You are putting in seriously impressive work right now. Don't stop! 🏋️‍♀️",
+  "Halfway through like a champion! I'm sending you all my energy right now. ⚡",
+  "Stand up, do a little wiggle, and sit back down. You earned that wiggle! 🕺",
+  "Your dedication honestly inspires me. You're going to do great things. 🌙",
+  "Another milestone reached! You're stacking progress like building blocks. 🧱",
+  "Fun fact: you've answered more questions than most people would even attempt. Hero! 🦸‍♀️",
+  "Take a second to appreciate yourself. You showed up and that's what matters. 🪞",
+  "I'm keeping count and you are absolutely smashing it. Round of applause! 👏",
+  "Peak focus mode activated! But also remember to blink. Seriously, blink! 😂",
+  "You're building knowledge with every single question. Brick by brilliant brick! 🏗️"
 ];
 
 export const END_SESSION_QUOTES = [
@@ -59,7 +101,17 @@ export const END_SESSION_QUOTES = [
   "Rest that brilliant brain of yours. You've done enough for this session. 🛏️",
   "Every session counts, and today was a great one. Sending you the biggest hug! 🤗",
   "You did it! One study session down, one step closer to our celebration dinner! 🍝",
-  "I admire your dedication so much. Now close the app and relax. You've earned it! 🛀"
+  "I admire your dedication so much. Now close the app and relax. You've earned it! 🛀",
+  "Look at you finishing a whole session! That's discipline right there. I'm in awe! 🫡",
+  "That's a wrap! Go reward yourself with something nice. You've more than earned it! 🎁",
+  "Logging off after all that hard work? You're my hero. Rest well tonight! 🌙",
+  "Another session conquered! Your future self is already thanking you. 🙏",
+  "You showed up, you put in the work, and that's what winners do. So proud! 🏆",
+  "Time to close the books and open the snack drawer. You deserve it all! 🍪",
+  "Incredible effort today. Go do something fun — you've earned every second of it! 🎈",
+  "The exam doesn't stand a chance against someone this dedicated. Goodnight, superstar! 🌟",
+  "I love how hard you work. Now please go rest that beautiful brain of yours! 😴",
+  "Session done! That's another step towards freedom. I can't wait to celebrate with you! 🥳"
 ];
 
 export function getRandomQuote(quotesArray) {

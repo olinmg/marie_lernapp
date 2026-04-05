@@ -1,18 +1,20 @@
 import { useState, useEffect } from 'react'
 import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
-import { Sparkles, BookOpen, BarChart3, LogOut, VolumeX, Volume2 } from 'lucide-react'
+import { Sparkles, BookOpen, BarChart3, FolderOpen, LogOut, VolumeX, Volume2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { setAuthToken, BASE } from '@/api'
 import logo from '@/assets/psychomausi-logo.png'
 import CreatePage from './pages/CreatePage'
 import StudyPage from './pages/StudyPage'
 import OverviewPage from './pages/OverviewPage'
+import DocumentsPage from './pages/DocumentsPage'
 import LoginPage from './pages/LoginPage'
 
 const tabs = [
-  { path: '/create', label: 'Create', icon: Sparkles },
+  { path: '/create', label: 'Upload', icon: Sparkles },
   { path: '/study', label: 'Study', icon: BookOpen },
   { path: '/overview', label: 'Overview', icon: BarChart3 },
+  { path: '/documents', label: 'Documents', icon: FolderOpen },
 ]
 
 export default function App() {
@@ -109,6 +111,7 @@ export default function App() {
           <Route path="/create" element={<CreatePage />} />
           <Route path="/study" element={<StudyPage muteNotes={muteNotes} />} />
           <Route path="/overview" element={<OverviewPage />} />
+          <Route path="/documents" element={<DocumentsPage />} />
         </Routes>
       </main>
     </div>

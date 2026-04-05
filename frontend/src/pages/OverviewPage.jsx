@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchCards, deleteCard, fetchDocumentBlobUrl, fetchStats } from '../api'
+import { DIFFICULTIES } from '../constants'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import DifficultyBadge from '../components/DifficultyBadge'
+import DocumentFilter from '../components/DocumentFilter'
 import { Trash2, ChevronDown, FileText, X, Check, Loader2, Inbox, AlertTriangle, BarChart3, ChevronUp, Search } from 'lucide-react'
 import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -23,9 +25,32 @@ const ACTIVITY_TABS = [
   { key: 'cumulative', label: 'Cumulative' },
 ]
 
-function StatsSection({ stats }) {
+function StatsSection({ stats: initialStats, documents }) {
   const [activityTab, setActivityTab] = useState('daily')
   const [expanded, setExpanded] = useState(true)
+  const [diffFilter, setDiffFilter] = useState('all')
+  const [docFilter, setDocFilter] = useState('all')
+  const [stats, setStats] = useState(initialStats)
+  const [loadingStats, setLoadingStats] = useState(false)
+
+  useEffect(() => { setStats(initialStats) }, [initialStats])
+
+  useEffect(() => {
+    if (diffFilter === 'all' && docFilter === 'all') {
+      setStats(initialStats)
+      return
+    }
+    let cancelled = false
+    setLoadingStats(true)
+    fetchStats(
+      diffFilter !== 'all' ? diffFilter : undefined,
+      docFilter !== 'all' ? docFilter : undefined,
+    )
+      .then(data => { if (!cancelled) setStats(data) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingStats(false) })
+    return () => { cancelled = true }
+  }, [diffFilter, docFilter, initialStats])
 
   if (!stats) return null
 
@@ -53,6 +78,40 @@ function StatsSection({ stats }) {
 
       {expanded && (
         <div className="px-4 pb-5 space-y-6 border-t border-border pt-4">
+          {/* Difficulty filter */}
+          <div className="flex flex-wrap gap-1.5">
+            {[{ key: 'all', label: 'All' }, ...DIFFICULTIES].map(d => {
+              const active = diffFilter === d.key
+              return (
+                <button
+                  key={d.key}
+                  onClick={(e) => { e.stopPropagation(); setDiffFilter(d.key) }}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors cursor-pointer border',
+                    active
+                      ? d.key === 'all'
+                        ? 'bg-foreground text-background border-foreground'
+                        : cn(d.activeClass, 'border-current/20')
+                      : 'bg-card text-muted-foreground border-border hover:bg-secondary hover:text-foreground'
+                  )}
+                >
+                  {d.dotColor && <span className={cn('h-1.5 w-1.5 rounded-full', d.dotColor)} />}
+                  {d.label}
+                </button>
+              )
+            })}
+            {loadingStats && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground self-center ml-1" />}
+          </div>
+
+          {/* Document source filter */}
+          {documents.length > 1 && (
+            <DocumentFilter
+              documents={documents}
+              selected={docFilter}
+              onChange={setDocFilter}
+            />
+          )}
+
           {/* Activity Chart */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -348,6 +407,7 @@ export default function OverviewPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchInQuestions, setSearchInQuestions] = useState(true)
   const [searchInAnswers, setSearchInAnswers] = useState(true)
+  const [docFilter, setDocFilter] = useState('all')
 
   const loadCards = useCallback(async () => {
     setLoading(true)
@@ -359,9 +419,24 @@ export default function OverviewPage() {
 
   useEffect(() => { loadCards() }, [loadCards])
 
+  // Compute unique documents from cards
+  const uniqueDocuments = (() => {
+    const map = new Map()
+    for (const c of cards) {
+      if (c.documentId && !map.has(c.documentId)) {
+        map.set(c.documentId, { id: c.documentId, filename: c.documentFilename || 'Unknown' })
+      }
+    }
+    return Array.from(map.values())
+  })()
+
   const sorted = sortCards(cards, sortBy)
 
   const filtered = sorted.filter(card => {
+    // Document filter
+    if (docFilter !== 'all') {
+      if (card.documentId !== docFilter) return false
+    }
     if (!searchQuery.trim()) return true
     const q = searchQuery.toLowerCase()
     if (searchInQuestions && card.question.toLowerCase().includes(q)) return true
@@ -422,7 +497,7 @@ export default function OverviewPage() {
       </div>
 
       {/* Statistics */}
-      <StatsSection stats={stats} />
+      <StatsSection stats={stats} documents={uniqueDocuments} />
 
       {/* Search bar */}
       <div className="space-y-2">
@@ -483,6 +558,17 @@ export default function OverviewPage() {
           </button>
         ))}
       </div>
+
+      {/* Document source filter */}
+      {uniqueDocuments.length > 1 && (
+        <div className="flex flex-wrap gap-1.5 justify-center">
+          <DocumentFilter
+            documents={uniqueDocuments}
+            selected={docFilter}
+            onChange={setDocFilter}
+          />
+        </div>
+      )}
 
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground">

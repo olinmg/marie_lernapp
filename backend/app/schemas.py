@@ -59,6 +59,7 @@ class CardResponse(BaseModel):
     srs: SrsState
     createdAt: datetime
     documentId: Optional[str] = None
+    documentFilename: Optional[str] = Field(default=None, alias="documentFilename")
     approved: bool = True
 
     model_config = {"populate_by_name": True, "from_attributes": True}
@@ -111,3 +112,20 @@ class StatsResponse(BaseModel):
     daily: list[ActivityPoint]
     cumulative: list[ActivityPoint]
     progress: list[ProgressPoint]
+
+
+class DocumentCardStats(BaseModel):
+    total: int
+    new: int
+    correct: int
+    wrong: int
+
+
+class DocumentResponse(BaseModel):
+    id: str
+    filename: str
+    mediaType: str = Field(alias="mediaType")
+    createdAt: datetime = Field(alias="createdAt")
+    cardStats: DocumentCardStats = Field(alias="cardStats")
+
+    model_config = {"populate_by_name": True, "from_attributes": True}

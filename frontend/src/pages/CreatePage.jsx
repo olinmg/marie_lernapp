@@ -144,7 +144,9 @@ function UploadPhase({ onGenerate }) {
                 onChange={(e) => setHardRatio(+e.target.value)}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(to right, #dbeafe ${hardRatio}%, #22c55e ${hardRatio}%)`,
+                  background: hardRatio <= 50
+                    ? `linear-gradient(to right, #22c55e, #f97316 ${hardRatio * 2}%, #f97316 100%)`
+                    : `linear-gradient(to right, #f97316, #ef4444 ${(hardRatio - 50) * 2}%, #ef4444 100%)`,
                 }}
               />
               <div className="flex justify-between text-xs text-muted-foreground">
@@ -153,11 +155,18 @@ function UploadPhase({ onGenerate }) {
                   Normal
                 </span>
                 <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-amber-500" />
                   Hard
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-red-500" />
+                  Extra Hard
                 </span>
               </div>
               <p className="text-center text-sm font-medium">
-                {100 - hardRatio}% Normal / {hardRatio}% Hard
+                {hardRatio <= 50
+                  ? `${100 - hardRatio * 2}% Normal / ${hardRatio * 2}% Hard`
+                  : `${100 - (hardRatio - 50) * 2}% Hard / ${(hardRatio - 50) * 2}% Extra Hard`}
               </p>
             </div>
           </div>
@@ -185,7 +194,9 @@ function GeneratingPhase({ hardRatio, chunkProgress }) {
       <Loader2 className="h-12 w-12 mx-auto animate-spin text-muted-foreground" />
       <h2 className="text-xl font-semibold tracking-tight">Generating flashcards…</h2>
       <p className="text-sm font-medium text-muted-foreground">
-        {100 - hardRatio}% Normal / {hardRatio}% Hard
+        {hardRatio <= 50
+          ? `${100 - hardRatio * 2}% Normal / ${hardRatio * 2}% Hard`
+          : `${100 - (hardRatio - 50) * 2}% Hard / ${(hardRatio - 50) * 2}% Extra Hard`}
       </p>
       {chunkProgress ? (
         <div className="space-y-3">

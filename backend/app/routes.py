@@ -12,6 +12,7 @@ from .models import CardModel, AnswerModel, DocumentModel, GlobalStateModel, Stu
 from .schemas import (
     CardCreate, CardUpdate, CardResponse, StatsSchema, SrsState, AnswerSchema,
     CardDraft, AnswerSubmission, AnswerResult, ActivityPoint, ProgressPoint, StatsResponse,
+    DocumentResponse, DocumentCardStats,
 )
 from .ai_service import generate_cards, generate_cards_chunked, needs_chunking, PDF_MEDIA_TYPE, IMAGE_MEDIA_TYPES
 from .auth import require_auth, verify_password, create_token
@@ -60,6 +61,7 @@ def _card_to_response(card: CardModel) -> CardResponse:
         ),
         createdAt=card.created_at,
         documentId=card.document_id,
+        documentFilename=card.document.filename if card.document else None,
         approved=card.approved,
     )
 
@@ -393,16 +395,28 @@ async def get_state(db: AsyncSession = Depends(get_db), _auth: None = Depends(re
 
 
 @router.get("/stats", response_model=StatsResponse)
-async def get_stats(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
+async def get_stats(difficulty: str | None = None, document_id: str | None = None, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     # Load all study events
     ev_result = await db.execute(
         select(StudyEventModel).order_by(StudyEventModel.answered_at)
     )
     events = ev_result.scalars().all()
 
-    # Load all cards (id + created_at only) — approved only
-    card_result = await db.execute(select(CardModel).where(CardModel.approved == True))
+    # Load all cards — approved only, optionally filtered by difficulty
+    card_query = select(CardModel).where(CardModel.approved == True)
+    if difficulty:
+        card_query = card_query.where(CardModel.difficulty == difficulty)
+    if document_id:
+        card_query = card_query.where(CardModel.document_id == document_id)
+    card_result = await db.execute(card_query)
     cards = card_result.scalars().all()
+
+    # Build set of matching card IDs for event filtering
+    card_ids = {c.id for c in cards}
+
+    # Filter events to only those for matching cards
+    if difficulty or document_id:
+        events = [ev for ev in events if ev.card_id in card_ids]
 
     now = datetime.now(timezone.utc)
 
@@ -521,3 +535,165 @@ async def get_stats(db: AsyncSession = Depends(get_db), _auth: None = Depends(re
         cumulative=cumulative,
         progress=progress,
     )
+
+
+@router.get("/documents", response_model=list[DocumentResponse])
+async def list_documents(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
+    result = await db.execute(select(DocumentModel))
+    docs = result.scalars().all()
+
+    # Load approved cards grouped by document_id
+    card_result = await db.execute(select(CardModel).where(CardModel.approved == True))
+    all_cards = card_result.scalars().all()
+    cards_by_doc: dict[str, list[CardModel]] = defaultdict(list)
+    for c in all_cards:
+        if c.document_id:
+            cards_by_doc[c.document_id].append(c)
+
+    responses = []
+    for doc in docs:
+        doc_cards = cards_by_doc.get(doc.id, [])
+        total = len(doc_cards)
+        new_count = sum(1 for c in doc_cards if c.last_result is None)
+        correct_count = sum(1 for c in doc_cards if c.last_result == "correct")
+        wrong_count = sum(1 for c in doc_cards if c.last_result == "wrong")
+        responses.append(DocumentResponse(
+            id=doc.id,
+            filename=doc.filename,
+            mediaType=doc.media_type,
+            createdAt=doc.created_at,
+            cardStats=DocumentCardStats(
+                total=total,
+                new=new_count,
+                correct=correct_count,
+                wrong=wrong_count,
+            ),
+        ))
+
+    responses.sort(key=lambda d: d.createdAt, reverse=True)
+    return responses
+
+
+@router.delete("/documents/{doc_id}", status_code=204)
+async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
+    result = await db.execute(select(DocumentModel).where(DocumentModel.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Delete all cards (and their answers/study_events via cascade) linked to this document
+    card_result = await db.execute(select(CardModel).where(CardModel.document_id == doc_id))
+    cards = card_result.scalars().all()
+    for card in cards:
+        await db.delete(card)
+
+    await db.delete(doc)
+    await db.commit()
+
+
+@router.post("/documents/{doc_id}/generate")
+async def regenerate_from_document(
+    doc_id: str,
+    card_count: int = Form(...),
+    answer_count: int = Form(...),
+    min_correct: int = Form(1),
+    max_correct: int = Form(4),
+    hard_ratio: int = Form(50),
+    db: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_auth),
+):
+    if card_count < 1 or card_count > 500:
+        raise HTTPException(400, "card_count must be 1–500")
+    if answer_count < 2 or answer_count > 8:
+        raise HTTPException(400, "answer_count must be 2–8")
+    if min_correct < 1 or max_correct > answer_count - 1 or min_correct > max_correct:
+        raise HTTPException(400, "Invalid min_correct / max_correct range")
+    if hard_ratio < 0 or hard_ratio > 100:
+        raise HTTPException(400, "hard_ratio must be 0–100")
+
+    result = await db.execute(select(DocumentModel).where(DocumentModel.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    file_bytes = doc.data
+    media_type = doc.media_type
+
+    # If large PDF + many questions, use chunked generation with SSE
+    if needs_chunking(media_type, card_count, file_bytes):
+        async def _save_chunked_stream():
+            async for event_str in generate_cards_chunked(
+                file_bytes, media_type, card_count, answer_count,
+                min_correct, max_correct, hard_ratio, doc.id,
+            ):
+                if '"type": "complete"' in event_str:
+                    data_line = event_str.strip()
+                    if data_line.startswith("data: "):
+                        data = _json.loads(data_line[6:])
+                        raw_cards = data.get("cards", [])
+                        saved_cards = []
+                        for c in raw_cards:
+                            db_card = CardModel(
+                                id=str(uuid.uuid4()),
+                                question=c["question"],
+                                source_ref=c.get("sourceRef", ""),
+                                difficulty=c.get("difficulty", "normal"),
+                                document_id=doc.id,
+                                approved=False,
+                            )
+                            for ans in c["answers"]:
+                                db_card.answers.append(
+                                    AnswerModel(
+                                        id=str(uuid.uuid4()),
+                                        text=ans["text"],
+                                        is_correct=ans["isCorrect"],
+                                        explanation=ans.get("explanation"),
+                                    )
+                                )
+                            db.add(db_card)
+                            saved_cards.append(db_card)
+                        await db.commit()
+                        for sc in saved_cards:
+                            await db.refresh(sc)
+                        data["cards"] = [_card_to_response(sc).model_dump(by_alias=True) for sc in saved_cards]
+                        yield f"data: {_json.dumps(data)}\n\n"
+                        continue
+                yield event_str
+
+        return StreamingResponse(
+            _save_chunked_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    try:
+        cards = await generate_cards(file_bytes, media_type, card_count, answer_count, min_correct, max_correct, hard_ratio)
+    except Exception as e:
+        raise HTTPException(500, f"AI generation failed: {str(e)}")
+
+    saved_cards = []
+    for c in cards:
+        db_card = CardModel(
+            id=str(uuid.uuid4()),
+            question=c["question"],
+            source_ref=c.get("sourceRef", ""),
+            difficulty=c.get("difficulty", "normal"),
+            document_id=doc.id,
+            approved=False,
+        )
+        for ans in c["answers"]:
+            db_card.answers.append(
+                AnswerModel(
+                    id=str(uuid.uuid4()),
+                    text=ans["text"],
+                    is_correct=ans["isCorrect"],
+                    explanation=ans.get("explanation"),
+                )
+            )
+        db.add(db_card)
+        saved_cards.append(db_card)
+    await db.commit()
+    for sc in saved_cards:
+        await db.refresh(sc)
+
+    return {"documentId": doc.id, "cards": [_card_to_response(sc).model_dump(by_alias=True) for sc in saved_cards]}

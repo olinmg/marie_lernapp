@@ -1,20 +1,25 @@
 import os
 import io
 import json
+import logging
 import math
 import asyncio
 from typing import AsyncGenerator
+
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 from openai import OpenAI
 
 DIFFICULTY_PROMPTS = {
     "normal": "Clear, direct questions testing basic comprehension and recall of key concepts. Questions should be unambiguous and fair.",
     "hard": "Challenging questions requiring deep understanding, critical analysis, and the ability to apply and connect concepts. Include non-obvious nuances. Wrong answer options should be highly plausible.",
+    "extra_hard": "Extremely difficult questions that demand expert-level mastery, multi-step reasoning, and the ability to synthesize concepts across different sections. Questions should probe edge cases, subtle distinctions, and require eliminating highly deceptive distractors. Wrong answers must be nearly indistinguishable from correct ones without deep expertise.",
 }
 
 DIFFICULTY_LABELS = {
     "normal": "Normal",
     "hard": "Hard",
+    "extra_hard": "Extra Hard",
 }
 
 PDF_MEDIA_TYPE = "application/pdf"
@@ -177,12 +182,36 @@ async def _generate_single_difficulty(
     return _parse_json_response(raw_text)
 
 
-def _split_by_ratio(card_count: int, hard_ratio: int) -> tuple[int, int]:
-    """Return (normal_count, hard_count) that sum to card_count."""
+def _split_by_ratio(card_count: int, hard_ratio: int) -> dict[str, int]:
+    """Return dict of {difficulty: count} that sum to card_count.
+
+    hard_ratio 0-50 blends Normal↔Hard, 50-100 blends Hard↔Extra Hard.
+    """
     hard_ratio = max(0, min(100, hard_ratio))
-    normal_count = round(card_count * (100 - hard_ratio) / 100)
-    hard_count = card_count - normal_count
-    return normal_count, hard_count
+    if hard_ratio <= 50:
+        # Blend between normal and hard
+        # At 0: 100% normal, at 50: 100% hard
+        hard_frac = hard_ratio / 50.0
+        hard_count = round(card_count * hard_frac)
+        normal_count = card_count - hard_count
+        counts = {}
+        if normal_count > 0:
+            counts["normal"] = normal_count
+        if hard_count > 0:
+            counts["hard"] = hard_count
+        return counts
+    else:
+        # Blend between hard and extra_hard
+        # At 50: 100% hard, at 100: 100% extra_hard
+        extra_frac = (hard_ratio - 50) / 50.0
+        extra_count = round(card_count * extra_frac)
+        hard_count = card_count - extra_count
+        counts = {}
+        if hard_count > 0:
+            counts["hard"] = hard_count
+        if extra_count > 0:
+            counts["extra_hard"] = extra_count
+        return counts
 
 
 async def generate_cards(
@@ -194,26 +223,17 @@ async def generate_cards(
     max_correct: int,
     hard_ratio: int = 50,
 ) -> list[dict]:
-    normal_count, hard_count = _split_by_ratio(card_count, hard_ratio)
+    difficulty_counts = _split_by_ratio(card_count, hard_ratio)
 
     all_cards: list[dict] = []
 
-    if normal_count > 0:
+    for difficulty, count in difficulty_counts.items():
         cards = await _generate_single_difficulty(
-            file_bytes, media_type, normal_count, answer_count,
-            min_correct, max_correct, "normal",
+            file_bytes, media_type, count, answer_count,
+            min_correct, max_correct, difficulty,
         )
         for c in cards:
-            c["difficulty"] = "normal"
-        all_cards.extend(cards)
-
-    if hard_count > 0:
-        cards = await _generate_single_difficulty(
-            file_bytes, media_type, hard_count, answer_count,
-            min_correct, max_correct, "hard",
-        )
-        for c in cards:
-            c["difficulty"] = "hard"
+            c["difficulty"] = difficulty
         all_cards.extend(cards)
 
     return all_cards
@@ -300,13 +320,9 @@ async def generate_cards_chunked(
     batches are streamed to the client as each task finishes.
     """
 
-    normal_count, hard_count = _split_by_ratio(card_count, hard_ratio)
+    difficulty_counts = _split_by_ratio(card_count, hard_ratio)
 
-    batches: list[tuple[str, int]] = []
-    if normal_count > 0:
-        batches.append(("normal", normal_count))
-    if hard_count > 0:
-        batches.append(("hard", hard_count))
+    batches: list[tuple[str, int]] = list(difficulty_counts.items())
 
     # Extract text once
     all_pages = _extract_pdf_text(file_bytes)

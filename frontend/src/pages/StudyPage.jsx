@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { fetchCards, submitAnswer, fetchState } from '../api'
+import { DIFFICULTIES } from '../constants'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import DifficultyBadge from '../components/DifficultyBadge'
 import DocumentPreview from '../components/DocumentPreview'
+import DocumentFilter from '../components/DocumentFilter'
 import { getNextCard, filterCardsByMode } from '../srs'
 import { Square, CheckSquare, CheckCircle2, XCircle, Loader2, Inbox, ArrowRight, ArrowLeft, Sparkles, Shuffle, RotateCcw, CheckCircle, Flame, ChevronDown } from 'lucide-react'
 import { POSITIVE_QUOTES, SUPPORTIVE_QUOTES, INTERMISSION_QUOTES, getRandomQuote } from '../constants/easterEggs'
@@ -32,6 +34,8 @@ const MODES = [
 export default function StudyPage({ muteNotes = false }) {
   const [phase, setPhase] = useState('select') // 'select' | 'study'
   const [cards, setCards] = useState([])
+  const [selectedDifficulties, setSelectedDifficulties] = useState(new Set(DIFFICULTIES.map(d => d.key)))
+  const [selectedDocuments, setSelectedDocuments] = useState(new Set())
   const [mode, setMode] = useState('mixed')
   const [turnCounter, setTurnCounter] = useState(0)
   const [current, setCurrent] = useState(null)
@@ -62,6 +66,11 @@ export default function StudyPage({ muteNotes = false }) {
     const [data, state] = await Promise.all([fetchCards(), fetchState()])
     setCards(data)
     setTurnCounter(state.turnCounter)
+    // Initialize selected documents with all unique document IDs
+    const docIds = new Set(data.map(c => c.documentId).filter(Boolean))
+    // Include a pseudo "none" for cards with no document
+    if (data.some(c => !c.documentId)) docIds.add('__none__')
+    setSelectedDocuments(docIds)
     setLoading(false)
   }, [])
 
@@ -81,6 +90,40 @@ export default function StudyPage({ muteNotes = false }) {
     answerStartTime.current = Date.now()
   }, [muteNotes])
 
+  // Filter cards by selected difficulties and documents
+  const diffFilteredCards = cards.filter(c => {
+    if (!selectedDifficulties.has(c.difficulty)) return false
+    const docKey = c.documentId || '__none__'
+    if (!selectedDocuments.has(docKey)) return false
+    return true
+  })
+
+  // Compute unique documents from cards for the filter
+  const uniqueDocuments = (() => {
+    const map = new Map()
+    for (const c of cards) {
+      if (c.documentId && !map.has(c.documentId)) {
+        map.set(c.documentId, { id: c.documentId, filename: c.documentFilename || 'Unknown' })
+      }
+    }
+    if (cards.some(c => !c.documentId)) {
+      map.set('__none__', { id: '__none__', filename: 'Manual Cards' })
+    }
+    return Array.from(map.values())
+  })()
+
+  const toggleDifficulty = (key) => {
+    setSelectedDifficulties(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        if (next.size > 1) next.delete(key) // keep at least one selected
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
   // Start session: set mode, reset counters, pick first card, go to study phase
   const startSession = useCallback((newMode) => {
     setMode(newMode)
@@ -89,9 +132,9 @@ export default function StudyPage({ muteNotes = false }) {
     setConsecutiveCorrect(0)
     setConsecutiveWrong(0)
     setShowIntermission(false)
-    pickNext(cards, newMode, turnCounter)
+    pickNext(diffFilteredCards, newMode, turnCounter)
     setPhase('study')
-  }, [cards, turnCounter, pickNext])
+  }, [diffFilteredCards, turnCounter, pickNext])
 
   // Exit back to mode selection
   const exitSession = useCallback(() => {
@@ -132,7 +175,7 @@ export default function StudyPage({ muteNotes = false }) {
       setConsecutiveWrong(newWrongStreak)
       setConsecutiveCorrect(0)
       
-      if (newWrongStreak === 8 && !muteNotes) {
+      if (newWrongStreak === 3 && !muteNotes) {
         setActiveToast({ type: 'supportive', text: getRandomQuote(SUPPORTIVE_QUOTES) })
         setConsecutiveWrong(0)
         setTimeout(() => setActiveToast(null), 5000)
@@ -181,13 +224,13 @@ export default function StudyPage({ muteNotes = false }) {
       })
       setShowIntermission(true)
     } else {
-      pickNext(cards, mode, turnCounter)
+      pickNext(diffFilteredCards, mode, turnCounter)
     }
   }
 
   const continueFromIntermission = () => {
     setShowIntermission(false)
-    pickNext(cards, mode, turnCounter)
+    pickNext(diffFilteredCards, mode, turnCounter)
   }
 
   const toggleAnswer = (id) => {
@@ -231,11 +274,11 @@ export default function StudyPage({ muteNotes = false }) {
     return null
   }
 
-  // Compute mode card counts for badges
+  // Compute mode card counts for badges (based on difficulty-filtered cards)
   const modeCounts = {
-    mixed: cards.length,
-    new: cards.filter(c => c.srs.lastResult === null).length,
-    wrong: cards.filter(c => c.srs.lastResult === 'wrong').length,
+    mixed: diffFilteredCards.length,
+    new: diffFilteredCards.filter(c => c.srs.lastResult === null).length,
+    wrong: diffFilteredCards.filter(c => c.srs.lastResult === 'wrong').length,
   }
 
   if (loading) {
@@ -249,7 +292,7 @@ export default function StudyPage({ muteNotes = false }) {
     )
   }
 
-  const pool = filterCardsByMode(cards, mode)
+  const pool = filterCardsByMode(diffFilteredCards, mode)
   const hasDocument = current?.documentId != null
   const sessionWrong = sessionTotal - sessionCorrect
   const modeInfo = MODES.find(m => m.key === mode)
@@ -268,6 +311,46 @@ export default function StudyPage({ muteNotes = false }) {
           <h1 className="text-2xl font-semibold tracking-tight">Study</h1>
           <p className="text-sm text-muted-foreground">Choose a study mode to begin</p>
         </div>
+
+        {/* Difficulty multi-select */}
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-center text-muted-foreground">Difficulty Filter</p>
+          <div className="flex flex-wrap gap-1.5 justify-center">
+            {DIFFICULTIES.map(d => {
+              const active = selectedDifficulties.has(d.key)
+              return (
+                <button
+                  key={d.key}
+                  onClick={() => toggleDifficulty(d.key)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors cursor-pointer border',
+                    active
+                      ? cn(d.activeClass, 'border-current/20')
+                      : 'bg-card text-muted-foreground border-border hover:bg-secondary hover:text-foreground opacity-50'
+                  )}
+                >
+                  <span className={cn('h-1.5 w-1.5 rounded-full', d.dotColor)} />
+                  {d.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Document source multi-select */}
+        {uniqueDocuments.length > 1 && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-center text-muted-foreground">Source Document</p>
+            <div className="flex flex-wrap gap-1.5 justify-center">
+              <DocumentFilter
+                documents={uniqueDocuments}
+                selected={selectedDocuments}
+                onChange={setSelectedDocuments}
+                multi
+              />
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {MODES.map(m => {
