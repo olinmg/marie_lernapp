@@ -7,8 +7,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# SQLite DB will be stored in /data (mounted as volume)
-ENV DATABASE_URL=sqlite+aiosqlite:///data/flashlearn.db
+RUN mkdir -p /app/data
+
+# SQLite DB will be stored in /app/data
+ENV DATABASE_URL=sqlite+aiosqlite:////app/data/flashlearn.db
 
 EXPOSE 8001
 
