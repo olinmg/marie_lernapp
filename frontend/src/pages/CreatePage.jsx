@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { generateCards, createCard } from '../api'
+import { useState, useCallback, useEffect } from 'react'
+import { generateCards, approveCard, approveAllCards, deleteCard, fetchPendingCards } from '../api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -7,13 +7,13 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import DifficultyBadge from '../components/DifficultyBadge'
-import { Upload, Settings2, Loader2, Check, X, Plus, AlertCircle } from 'lucide-react'
+import { Upload, Settings2, Loader2, Check, X, Plus, AlertCircle, CheckCheck } from 'lucide-react'
 
 const ACCEPT_TYPES = '.pdf,.jpg,.jpeg,.png,.webp,.gif'
 
 function UploadPhase({ onGenerate }) {
   const [file, setFile] = useState(null)
-  const [cardCount, setCardCount] = useState(10)
+  const [cardCount, setCardCount] = useState('10')
   const [answerCount, setAnswerCount] = useState(5)
   const [minCorrect, setMinCorrect] = useState(1)
   const [maxCorrect, setMaxCorrect] = useState(4)
@@ -28,9 +28,12 @@ function UploadPhase({ onGenerate }) {
     if (f) setFile(f)
   }, [])
 
+  const parsedCardCount = parseInt(cardCount, 10)
+  const validCardCount = !isNaN(parsedCardCount) && parsedCardCount > 0
+
   const handleSubmit = () => {
-    if (!file) return
-    onGenerate({ file, cardCount, answerCount, minCorrect, maxCorrect, hardRatio })
+    if (!file || !validCardCount) return
+    onGenerate({ file, cardCount: Math.min(500, parsedCardCount), answerCount, minCorrect, maxCorrect, hardRatio })
   }
 
   return (
@@ -79,7 +82,7 @@ function UploadPhase({ onGenerate }) {
               <Label>Number of cards</Label>
               <Input
                 type="number" min={1} max={500} value={cardCount}
-                onChange={(e) => setCardCount(Math.min(500, Math.max(1, +e.target.value)))}
+                onChange={(e) => setCardCount(e.target.value)}
               />
             </div>
             <Button
@@ -161,8 +164,8 @@ function UploadPhase({ onGenerate }) {
         </CardContent>
       </Card>
 
-      <Button size="lg" className="w-full" onClick={handleSubmit} disabled={!file}>
-        Generate {cardCount} cards
+      <Button size="lg" className="w-full" onClick={handleSubmit} disabled={!file || !validCardCount}>
+        Generate {validCardCount ? Math.min(500, parsedCardCount) : ''} cards
       </Button>
     </div>
   )
@@ -198,6 +201,11 @@ function GeneratingPhase({ hardRatio, chunkProgress }) {
           <p className="text-xs text-muted-foreground">
             {Math.round((chunkProgress.completed / chunkProgress.total) * 100)}% complete
           </p>
+          {chunkProgress.cardsGenerated > 0 && (
+            <p className="text-sm font-medium text-foreground">
+              {chunkProgress.cardsGenerated} cards generated so far
+            </p>
+          )}
           {formatTime(chunkProgress.estimatedRemainingSeconds) && (
             <p className="text-sm font-medium text-muted-foreground">
               ~{formatTime(chunkProgress.estimatedRemainingSeconds)} remaining
@@ -211,9 +219,10 @@ function GeneratingPhase({ hardRatio, chunkProgress }) {
   )
 }
 
-function ReviewPhase({ cards, documentId, onDone }) {
+function ReviewPhase({ cards: initialCards, onDone }) {
   const [index, setIndex] = useState(0)
-  const [edited, setEdited] = useState(() => cards.map(c => ({ ...c })))
+  const [edited, setEdited] = useState(() => initialCards.map(c => ({ ...c })))
+  const [approvingAll, setApprovingAll] = useState(false)
 
   const card = edited[index]
   const total = edited.length
@@ -236,17 +245,26 @@ function ReviewPhase({ cards, documentId, onDone }) {
   }
 
   const approve = async () => {
-    await createCard({
-      question: card.question,
-      answers: card.answers,
-      sourceRef: card.sourceRef,
-      difficulty: card.difficulty || 'normal',
-      documentId,
-    })
+    await approveCard(card.id)
     next()
   }
 
-  const skip = () => next()
+  const skip = async () => {
+    // Delete unapproved card from DB
+    await deleteCard(card.id)
+    next()
+  }
+
+  const handleApproveAll = async () => {
+    setApprovingAll(true)
+    try {
+      await approveAllCards()
+      onDone()
+    } catch (e) {
+      console.error('Failed to approve all:', e)
+      setApprovingAll(false)
+    }
+  }
 
   const next = () => {
     if (index + 1 >= total) {
@@ -339,6 +357,19 @@ function ReviewPhase({ cards, documentId, onDone }) {
           <Check className="h-4 w-4" /> Approve
         </Button>
       </div>
+      <Button
+        variant="secondary"
+        className="w-full"
+        onClick={handleApproveAll}
+        disabled={approvingAll}
+      >
+        {approvingAll ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <CheckCheck className="h-4 w-4" />
+        )}
+        Approve all {total - index} remaining
+      </Button>
     </div>
   )
 }
@@ -347,9 +378,20 @@ export default function CreatePage() {
   const [phase, setPhase] = useState('upload')
   const [drafts, setDrafts] = useState([])
   const [hardRatio, setHardRatio] = useState(50)
-  const [documentId, setDocumentId] = useState(null)
   const [error, setError] = useState(null)
   const [chunkProgress, setChunkProgress] = useState(null)
+
+  // On mount, check for pending (unapproved) cards
+  useEffect(() => {
+    fetchPendingCards()
+      .then(pending => {
+        if (pending.length > 0) {
+          setDrafts(pending)
+          setPhase('review')
+        }
+      })
+      .catch(() => {}) // ignore if not logged in yet etc.
+  }, [])
 
   const handleGenerate = async ({ file, cardCount, answerCount, minCorrect, maxCorrect, hardRatio: ratio }) => {
     setHardRatio(ratio)
@@ -359,10 +401,9 @@ export default function CreatePage() {
     try {
       const result = await generateCards(
         file, cardCount, answerCount, minCorrect, maxCorrect, ratio,
-        (completed, total, estimatedRemainingSeconds) => setChunkProgress({ completed, total, estimatedRemainingSeconds }),
+        (completed, total, estimatedRemainingSeconds, cardsGenerated) => setChunkProgress({ completed, total, estimatedRemainingSeconds, cardsGenerated }),
       )
       setDrafts(result.cards)
-      setDocumentId(result.documentId)
       setPhase('review')
     } catch (e) {
       setError(e.message)
@@ -373,7 +414,6 @@ export default function CreatePage() {
   const handleDone = () => {
     setPhase('upload')
     setDrafts([])
-    setDocumentId(null)
   }
 
   return (
@@ -386,7 +426,7 @@ export default function CreatePage() {
       )}
       {phase === 'upload' && <UploadPhase onGenerate={handleGenerate} />}
       {phase === 'generating' && <GeneratingPhase hardRatio={hardRatio} chunkProgress={chunkProgress} />}
-      {phase === 'review' && <ReviewPhase cards={drafts} documentId={documentId} onDone={handleDone} />}
+      {phase === 'review' && <ReviewPhase cards={drafts} onDone={handleDone} />}
     </div>
   )
 }

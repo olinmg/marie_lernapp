@@ -59,6 +59,7 @@ class CardResponse(BaseModel):
     srs: SrsState
     createdAt: datetime
     documentId: Optional[str] = None
+    approved: bool = True
 
     model_config = {"populate_by_name": True, "from_attributes": True}
 

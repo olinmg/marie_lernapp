@@ -3,7 +3,6 @@ import io
 import json
 import math
 import asyncio
-import time as _time
 from typing import AsyncGenerator
 
 from openai import OpenAI
@@ -27,12 +26,6 @@ MIN_PAGES_FOR_CHUNKING = 20
 # Token estimation
 CHARS_PER_TOKEN = 4  # rough approximation for English text
 MAX_INPUT_TOKENS = 100_000  # conservative context budget for document text
-
-# Rate-limit-aware scheduling (TPM configurable via env)
-PROMPT_OVERHEAD_TOKENS = 600
-RATE_LIMIT_TPM = int(os.getenv("OPENAI_RATE_LIMIT_TPM", "200000"))
-SAFETY_FACTOR = 0.80
-EFFECTIVE_TPM = int(RATE_LIMIT_TPM * SAFETY_FACTOR)
 
 MODEL = "gpt-5.4"
 
@@ -253,43 +246,7 @@ def _group_pages(
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
-def _estimate_chunk_tokens(text: str) -> int:
-    """Estimate input tokens for a text chunk sent to OpenAI."""
-    return _estimate_tokens(text) + PROMPT_OVERHEAD_TOKENS
-
-
-class _TokenRateLimiter:
-    """Sliding-window token rate limiter (per minute)."""
-
-    def __init__(self, tokens_per_minute: int):
-        self.tpm = tokens_per_minute
-        self._log: list[tuple[float, int]] = []
-
-    def _purge(self, now: float):
-        cutoff = now - 60.0
-        self._log = [(t, n) for t, n in self._log if t > cutoff]
-
-    async def acquire(self, tokens: int) -> float:
-        """Block until *tokens* fit in the rolling window. Returns seconds waited."""
-        waited = 0.0
-        while True:
-            now = _time.monotonic()
-            self._purge(now)
-            used = sum(n for _, n in self._log)
-            if used + tokens <= self.tpm:
-                self._log.append((now, tokens))
-                return waited
-            oldest = self._log[0][0] if self._log else now
-            delay = max(0.5, (oldest + 60.0) - now + 0.5)
-            await asyncio.sleep(delay)
-            waited += delay
-
-
-# ---------------------------------------------------------------------------
-# Chunked generation with SSE progress
+# Chunked generation with SSE progress (parallel)
 # ---------------------------------------------------------------------------
 
 def needs_chunking(media_type: str, card_count: int, file_bytes: bytes) -> bool:
@@ -298,6 +255,33 @@ def needs_chunking(media_type: str, card_count: int, file_bytes: bytes) -> bool:
     pages = _extract_pdf_text(file_bytes)
     total_tokens = sum(_estimate_tokens(text) for _, text in pages)
     return total_tokens > MAX_INPUT_TOKENS or len(pages) > MIN_PAGES_FOR_CHUNKING
+
+
+async def _process_chunk(
+    chunk_idx: int,
+    text: str,
+    page_start: int,
+    page_end: int,
+    q_count: int,
+    answer_count: int,
+    min_correct: int,
+    max_correct: int,
+    difficulty: str,
+    queue: asyncio.Queue,
+):
+    """Process a single chunk and push the result onto the queue."""
+    try:
+        system_prompt = _build_system_prompt(
+            q_count, answer_count, min_correct, max_correct, difficulty,
+            page_range=(page_start, page_end),
+        )
+        raw = await _call_llm(system_prompt, text)
+        chunk_cards = _parse_json_response(raw)
+        for c in chunk_cards:
+            c["difficulty"] = difficulty
+        await queue.put(("ok", chunk_idx, chunk_cards))
+    except Exception as exc:
+        await queue.put(("error", chunk_idx, str(exc)))
 
 
 async def generate_cards_chunked(
@@ -312,8 +296,8 @@ async def generate_cards_chunked(
 ) -> AsyncGenerator[str, None]:
     """Yield SSE-formatted events as chunks complete.
 
-    Text is extracted from the PDF up-front, grouped into page chunks,
-    and sent **sequentially** with rate limiting.
+    All LLM calls are fired concurrently; progress and partial card
+    batches are streamed to the client as each task finishes.
     """
 
     normal_count, hard_count = _split_by_ratio(card_count, hard_ratio)
@@ -327,7 +311,7 @@ async def generate_cards_chunked(
     # Extract text once
     all_pages = _extract_pdf_text(file_bytes)
 
-    # Build ordered chunk definitions: (text, page_start, page_end, q_count, difficulty, est_tokens)
+    # Build ordered chunk definitions
     chunks: list[tuple] = []
 
     for difficulty, count in batches:
@@ -340,48 +324,44 @@ async def generate_cards_chunked(
 
         for idx, group in enumerate(groups):
             text = _format_page_text(group)
-            est_tokens = _estimate_chunk_tokens(text)
             page_start = group[0][0] if group else 1
             page_end = group[-1][0] if group else 1
-            chunks.append((text, page_start, page_end, qs_per[idx], difficulty, est_tokens))
+            chunks.append((text, page_start, page_end, qs_per[idx], difficulty))
 
     total_sections = len(chunks)
-    total_tokens = sum(c[5] for c in chunks)
-    estimated_total_seconds = max(30, (total_tokens / EFFECTIVE_TPM) * 60)
-
-    limiter = _TokenRateLimiter(EFFECTIVE_TPM)
-    all_cards: list[dict] = []
-    completed = 0
-    start_wall = _time.monotonic()
-
-    def _progress_event(remaining_secs: float) -> str:
-        return f"data: {json.dumps({'type': 'progress', 'completed': completed, 'total': total_sections, 'estimatedTotalSeconds': round(estimated_total_seconds), 'estimatedRemainingSeconds': round(max(0, remaining_secs))})}\n\n"
 
     # Initial progress
-    yield _progress_event(estimated_total_seconds)
+    yield f"data: {json.dumps({'type': 'progress', 'completed': 0, 'total': total_sections, 'cards': []})}\n\n"
 
-    for text, page_start, page_end, q_count, difficulty, est_tokens in chunks:
-        await limiter.acquire(est_tokens)
-
-        system_prompt = _build_system_prompt(
-            q_count, answer_count, min_correct, max_correct, difficulty,
-            page_range=(page_start, page_end),
+    # Fire all chunks concurrently
+    queue: asyncio.Queue = asyncio.Queue()
+    tasks = []
+    for i, (text, page_start, page_end, q_count, difficulty) in enumerate(chunks):
+        task = asyncio.create_task(
+            _process_chunk(
+                i, text, page_start, page_end, q_count,
+                answer_count, min_correct, max_correct, difficulty, queue,
+            )
         )
-        raw = await _call_llm(system_prompt, text)
-        chunk_cards = _parse_json_response(raw)
+        tasks.append(task)
 
-        for c in chunk_cards:
-            c["difficulty"] = difficulty
-        all_cards.extend(chunk_cards)
-        completed += 1
+    all_cards: list[dict] = []
+    completed = 0
+    errors: list[str] = []
 
-        elapsed = _time.monotonic() - start_wall
-        if completed < total_sections:
-            remaining = (elapsed / completed) * (total_sections - completed)
-        else:
-            remaining = 0
+    try:
+        for _ in range(total_sections):
+            status, chunk_idx, payload = await queue.get()
+            if status == "ok":
+                all_cards.extend(payload)
+                completed += 1
+                yield f"data: {json.dumps({'type': 'progress', 'completed': completed, 'total': total_sections, 'cards': payload})}\n\n"
+            else:
+                completed += 1
+                errors.append(f"Chunk {chunk_idx}: {payload}")
+                yield f"data: {json.dumps({'type': 'progress', 'completed': completed, 'total': total_sections, 'cards': []})}\n\n"
+    except Exception as exc:
+        errors.append(str(exc))
 
-        yield _progress_event(remaining)
-
-    # Final event with all cards
-    yield f"data: {json.dumps({'type': 'complete', 'documentId': document_id, 'cards': all_cards})}\n\n"
+    # Always send the completion event so the frontend never hangs
+    yield f"data: {json.dumps({'type': 'complete', 'documentId': document_id, 'cards': all_cards, 'errors': errors})}\n\n"

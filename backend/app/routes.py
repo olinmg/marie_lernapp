@@ -16,6 +16,7 @@ from .schemas import (
 from .ai_service import generate_cards, generate_cards_chunked, needs_chunking, PDF_MEDIA_TYPE, IMAGE_MEDIA_TYPES
 from .auth import require_auth, verify_password, create_token
 from pydantic import BaseModel as _BaseModel
+import json as _json
 
 router = APIRouter(prefix="/api")
 
@@ -59,6 +60,7 @@ def _card_to_response(card: CardModel) -> CardResponse:
         ),
         createdAt=card.created_at,
         documentId=card.document_id,
+        approved=card.approved,
     )
 
 
@@ -136,11 +138,50 @@ async def generate(
 
     # If large PDF + many questions, use chunked generation with SSE
     if needs_chunking(media_type, card_count, file_bytes):
-        return StreamingResponse(
-            generate_cards_chunked(
+        async def _save_chunked_stream():
+            all_cards = []
+            async for event_str in generate_cards_chunked(
                 file_bytes, media_type, card_count, answer_count,
                 min_correct, max_correct, hard_ratio, doc.id,
-            ),
+            ):
+                # Intercept the complete event to save cards to DB
+                if '"type": "complete"' in event_str:
+                    data_line = event_str.strip()
+                    if data_line.startswith("data: "):
+                        data = _json.loads(data_line[6:])
+                        raw_cards = data.get("cards", [])
+                        saved_cards = []
+                        for c in raw_cards:
+                            db_card = CardModel(
+                                id=str(uuid.uuid4()),
+                                question=c["question"],
+                                source_ref=c.get("sourceRef", ""),
+                                difficulty=c.get("difficulty", "normal"),
+                                document_id=doc.id,
+                                approved=False,
+                            )
+                            for ans in c["answers"]:
+                                db_card.answers.append(
+                                    AnswerModel(
+                                        id=str(uuid.uuid4()),
+                                        text=ans["text"],
+                                        is_correct=ans["isCorrect"],
+                                        explanation=ans.get("explanation"),
+                                    )
+                                )
+                            db.add(db_card)
+                            saved_cards.append(db_card)
+                        await db.commit()
+                        for sc in saved_cards:
+                            await db.refresh(sc)
+                        # Re-emit complete event with DB card responses
+                        data["cards"] = [_card_to_response(sc).model_dump(by_alias=True) for sc in saved_cards]
+                        yield f"data: {_json.dumps(data)}\n\n"
+                        continue
+                yield event_str
+
+        return StreamingResponse(
+            _save_chunked_stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -150,7 +191,33 @@ async def generate(
     except Exception as e:
         raise HTTPException(500, f"AI generation failed: {str(e)}")
 
-    return {"documentId": doc.id, "cards": cards}
+    # Save generated cards as unapproved drafts
+    saved_cards = []
+    for c in cards:
+        db_card = CardModel(
+            id=str(uuid.uuid4()),
+            question=c["question"],
+            source_ref=c.get("sourceRef", ""),
+            difficulty=c.get("difficulty", "normal"),
+            document_id=doc.id,
+            approved=False,
+        )
+        for ans in c["answers"]:
+            db_card.answers.append(
+                AnswerModel(
+                    id=str(uuid.uuid4()),
+                    text=ans["text"],
+                    is_correct=ans["isCorrect"],
+                    explanation=ans.get("explanation"),
+                )
+            )
+        db.add(db_card)
+        saved_cards.append(db_card)
+    await db.commit()
+    for sc in saved_cards:
+        await db.refresh(sc)
+
+    return {"documentId": doc.id, "cards": [_card_to_response(sc).model_dump(by_alias=True) for sc in saved_cards]}
 
 
 @router.get("/documents/{doc_id}")
@@ -192,10 +259,38 @@ async def create_card(card: CardCreate, db: AsyncSession = Depends(get_db), _aut
 
 @router.get("/cards", response_model=list[CardResponse])
 async def list_cards(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
-    result = await db.execute(select(CardModel))
+    result = await db.execute(select(CardModel).where(CardModel.approved == True))
     cards = result.scalars().all()
     return [_card_to_response(c) for c in cards]
 
+
+@router.get("/cards/pending", response_model=list[CardResponse])
+async def list_pending_cards(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
+    result = await db.execute(select(CardModel).where(CardModel.approved == False))
+    cards = result.scalars().all()
+    return [_card_to_response(c) for c in cards]
+
+
+@router.post("/cards/approve-all")
+async def approve_all_cards(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
+    result = await db.execute(select(CardModel).where(CardModel.approved == False))
+    cards = result.scalars().all()
+    for card in cards:
+        card.approved = True
+    await db.commit()
+    return {"approved": len(cards)}
+
+
+@router.post("/cards/{card_id}/approve", response_model=CardResponse)
+async def approve_card(card_id: str, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
+    result = await db.execute(select(CardModel).where(CardModel.id == card_id))
+    card = result.scalar_one_or_none()
+    if not card:
+        raise HTTPException(404, "Card not found")
+    card.approved = True
+    await db.commit()
+    await db.refresh(card)
+    return _card_to_response(card)
 
 @router.patch("/cards/{card_id}", response_model=CardResponse)
 async def update_card(card_id: str, update: CardUpdate, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
@@ -305,8 +400,8 @@ async def get_stats(db: AsyncSession = Depends(get_db), _auth: None = Depends(re
     )
     events = ev_result.scalars().all()
 
-    # Load all cards (id + created_at only)
-    card_result = await db.execute(select(CardModel))
+    # Load all cards (id + created_at only) — approved only
+    card_result = await db.execute(select(CardModel).where(CardModel.approved == True))
     cards = card_result.scalars().all()
 
     now = datetime.now(timezone.utc)

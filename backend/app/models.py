@@ -31,6 +31,7 @@ class CardModel(Base):
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False, default="normal")
     correct: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     wrong: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     document_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("documents.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)

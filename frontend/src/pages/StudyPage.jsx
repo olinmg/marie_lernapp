@@ -29,7 +29,7 @@ const MODES = [
   { key: 'wrong', label: 'Wrong Only', icon: RotateCcw, description: 'Cards you got wrong' },
 ]
 
-export default function StudyPage() {
+export default function StudyPage({ muteNotes = false }) {
   const [phase, setPhase] = useState('select') // 'select' | 'study'
   const [cards, setCards] = useState([])
   const [mode, setMode] = useState('mixed')
@@ -77,9 +77,9 @@ export default function StudyPage() {
     setChecked(false)
     setIsCorrect(false)
     setExpandedExplanations(new Set())
-    setHoverQuote(getRandomQuote(SUPPORTIVE_QUOTES))
+    setHoverQuote(muteNotes ? '' : getRandomQuote(SUPPORTIVE_QUOTES))
     answerStartTime.current = Date.now()
-  }, [])
+  }, [muteNotes])
 
   // Start session: set mode, reset counters, pick first card, go to study phase
   const startSession = useCallback((newMode) => {
@@ -113,7 +113,7 @@ export default function StudyPage() {
     setIsCorrect(correct)
     setChecked(true)
     setSessionTotal(t => t + 1)
-    setHoverQuote(correct ? getRandomQuote(POSITIVE_QUOTES) : getRandomQuote(SUPPORTIVE_QUOTES))
+    setHoverQuote(muteNotes ? '' : (correct ? getRandomQuote(POSITIVE_QUOTES) : getRandomQuote(SUPPORTIVE_QUOTES)))
     
     if (correct) {
       setSessionCorrect(c => c + 1)
@@ -122,7 +122,7 @@ export default function StudyPage() {
       setConsecutiveCorrect(newStreak)
       setConsecutiveWrong(0)
       
-      if (newStreak === 5) {
+      if (newStreak === 5 && !muteNotes) {
         setActiveToast({ type: 'positive', text: getRandomQuote(POSITIVE_QUOTES) })
         setConsecutiveCorrect(0)
         setTimeout(() => setActiveToast(null), 4000)
@@ -132,7 +132,7 @@ export default function StudyPage() {
       setConsecutiveWrong(newWrongStreak)
       setConsecutiveCorrect(0)
       
-      if (newWrongStreak === 3) {
+      if (newWrongStreak === 8 && !muteNotes) {
         setActiveToast({ type: 'supportive', text: getRandomQuote(SUPPORTIVE_QUOTES) })
         setConsecutiveWrong(0)
         setTimeout(() => setActiveToast(null), 5000)
@@ -172,11 +172,11 @@ export default function StudyPage() {
   const handleNext = () => {
     // Intermission check
     if (sessionTotal > 0 && sessionTotal % 25 === 0) {
-      const includeImage = imagesList.length > 0 && Math.random() <= 0.50 // 50% chance
+      const includeImage = !muteNotes && imagesList.length > 0 && Math.random() <= 0.50 // 50% chance
       const imgTarget = includeImage ? imagesList[Math.floor(Math.random() * imagesList.length)] : null
       
       setIntermissionData({
-        quote: getRandomQuote(INTERMISSION_QUOTES),
+        quote: muteNotes ? 'Take a short break!' : getRandomQuote(INTERMISSION_QUOTES),
         image: imgTarget
       })
       setShowIntermission(true)
@@ -459,9 +459,11 @@ export default function StudyPage() {
                 <>
                   <div className="group relative flex-1 flex items-center gap-2 px-3 py-3 rounded-lg text-sm font-medium bg-primary/5 text-primary/70 border border-primary/10 cursor-default">
                     <Sparkles className="h-4 w-4" /> You got this!
-                    <div className="absolute bottom-full left-0 right-0 mb-2 px-3 py-2 rounded-lg text-xs bg-card border border-border shadow-lg text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                      {hoverQuote}
-                    </div>
+                    {!muteNotes && (
+                      <div className="absolute bottom-full left-0 right-0 mb-2 px-3 py-2 rounded-lg text-xs bg-card border border-border shadow-lg text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                        {hoverQuote}
+                      </div>
+                    )}
                   </div>
                   <Button size="lg" onClick={handleCheck} disabled={selected.size === 0}>
                     Check Answer
@@ -477,9 +479,11 @@ export default function StudyPage() {
                       ? <><CheckCircle2 className="h-4 w-4" /> Correct — you got all right answers!</>
                       : <><XCircle className="h-4 w-4" /> Incorrect</>
                     }
-                    <div className="absolute bottom-full left-0 right-0 mb-2 px-3 py-2 rounded-lg text-xs bg-card border border-border shadow-lg text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                      {hoverQuote}
-                    </div>
+                    {!muteNotes && (
+                      <div className="absolute bottom-full left-0 right-0 mb-2 px-3 py-2 rounded-lg text-xs bg-card border border-border shadow-lg text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                        {hoverQuote}
+                      </div>
+                    )}
                   </div>
                   <Button size="lg" onClick={handleNext}>
                     Next Card <ArrowRight className="ml-2 h-4 w-4" />
@@ -492,7 +496,7 @@ export default function StudyPage() {
       )}
 
       {/* Floating Easter Egg Toast */}
-      {activeToast && (
+      {activeToast && !muteNotes && (
         <div className={cn(
           "fixed top-16 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-top-5 fade-in duration-300",
           "px-6 py-4 rounded-full shadow-lg border backdrop-blur-md font-medium text-center flex items-center gap-3",

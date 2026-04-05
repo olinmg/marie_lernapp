@@ -36,6 +36,7 @@ export async function generateCards(file, cardCount, answerCount, minCorrect, ma
     const decoder = new TextDecoder()
     let buffer = ''
     let result = null
+    let allCards = []
 
     while (true) {
       const { done, value } = await reader.read()
@@ -50,7 +51,10 @@ export async function generateCards(file, cardCount, answerCount, minCorrect, ma
         if (!line.startsWith('data: ')) continue
         const event = JSON.parse(line.slice(6))
         if (event.type === 'progress' && onProgress) {
-          onProgress(event.completed, event.total, event.estimatedRemainingSeconds)
+          if (event.cards && event.cards.length > 0) {
+            allCards = allCards.concat(event.cards)
+          }
+          onProgress(event.completed, event.total, null, allCards.length)
         } else if (event.type === 'complete') {
           result = event
         }
@@ -100,6 +104,30 @@ export async function updateCard(id, patch) {
 export async function deleteCard(id) {
   const res = await fetch(`${BASE}/cards/${id}`, { method: 'DELETE', headers: authHeaders() })
   if (!res.ok) throw new Error('Failed to delete card')
+}
+
+export async function fetchPendingCards() {
+  const res = await fetch(`${BASE}/cards/pending`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch pending cards')
+  return res.json()
+}
+
+export async function approveCard(id) {
+  const res = await fetch(`${BASE}/cards/${id}/approve`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to approve card')
+  return res.json()
+}
+
+export async function approveAllCards() {
+  const res = await fetch(`${BASE}/cards/approve-all`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('Failed to approve all cards')
+  return res.json()
 }
 
 export async function submitAnswer(cardId, { isCorrect, responseTimeMs, answerCount }) {
