@@ -1,10 +1,13 @@
+import { useState, useEffect } from 'react'
 import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
-import { Sparkles, BookOpen, BarChart3 } from 'lucide-react'
+import { Sparkles, BookOpen, BarChart3, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { setAuthToken } from '@/api'
 import logo from '@/assets/psychomausi-logo.png'
 import CreatePage from './pages/CreatePage'
 import StudyPage from './pages/StudyPage'
 import OverviewPage from './pages/OverviewPage'
+import LoginPage from './pages/LoginPage'
 
 const tabs = [
   { path: '/create', label: 'Create', icon: Sparkles },
@@ -13,6 +16,32 @@ const tabs = [
 ]
 
 export default function App() {
+  const [authed, setAuthed] = useState(null) // null = checking
+
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token')
+    if (!token) { setAuthed(false); return }
+    setAuthToken(token)
+    fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => { if (r.ok) { setAuthed(true) } else { localStorage.removeItem('auth_token'); setAuthToken(null); setAuthed(false) } })
+      .catch(() => { setAuthed(false) })
+  }, [])
+
+  function handleLogin(token) {
+    localStorage.setItem('auth_token', token)
+    setAuthToken(token)
+    setAuthed(true)
+  }
+
+  function handleLogout() {
+    localStorage.removeItem('auth_token')
+    setAuthToken(null)
+    setAuthed(false)
+  }
+
+  if (authed === null) return null // loading
+  if (!authed) return <LoginPage onLogin={handleLogin} />
+
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <header className="bg-card/80 backdrop-blur-sm border-b border-border sticky top-0 z-50">
@@ -21,25 +50,34 @@ export default function App() {
             <img src={logo} alt="PsychoMausi" className="h-20 w-auto" />
             PsychoMausi
           </span>
-          <nav className="flex gap-1">
-            {tabs.map(({ path, label, icon: Icon }) => (
-              <NavLink
-                key={path}
-                to={path}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-secondary text-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
-                  )
-                }
-              >
-                <Icon className="h-4 w-4" />
-                {label}
-              </NavLink>
-            ))}
-          </nav>
+          <div className="flex items-center gap-2">
+            <nav className="flex gap-1">
+              {tabs.map(({ path, label, icon: Icon }) => (
+                <NavLink
+                  key={path}
+                  to={path}
+                  className={({ isActive }) =>
+                    cn(
+                      "flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+                      isActive
+                        ? "bg-secondary text-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                    )
+                  }
+                >
+                  <Icon className="h-4 w-4" />
+                  {label}
+                </NavLink>
+              ))}
+            </nav>
+            <button
+              onClick={handleLogout}
+              className="ml-2 p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+              title="Log out"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </header>
 

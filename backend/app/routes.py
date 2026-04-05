@@ -14,8 +14,26 @@ from .schemas import (
     CardDraft, AnswerSubmission, AnswerResult, ActivityPoint, ProgressPoint, StatsResponse,
 )
 from .ai_service import generate_cards, generate_cards_chunked, needs_chunking, PDF_MEDIA_TYPE, IMAGE_MEDIA_TYPES
+from .auth import require_auth, verify_password, create_token
+from pydantic import BaseModel as _BaseModel
 
 router = APIRouter(prefix="/api")
+
+
+class _LoginRequest(_BaseModel):
+    password: str
+
+
+@router.post("/auth/login")
+async def login(body: _LoginRequest):
+    if not verify_password(body.password):
+        raise HTTPException(401, "Wrong password")
+    return {"token": create_token()}
+
+
+@router.get("/auth/verify")
+async def verify_token(_: None = Depends(require_auth)):
+    return {"ok": True}
 
 ALLOWED_MEDIA_TYPES = {PDF_MEDIA_TYPE} | IMAGE_MEDIA_TYPES
 
@@ -87,6 +105,7 @@ async def generate(
     max_correct: int = Form(4),
     hard_ratio: int = Form(50),
     db: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_auth),
 ):
     if card_count < 1 or card_count > 500:
         raise HTTPException(400, "card_count must be 1–500")
@@ -135,7 +154,7 @@ async def generate(
 
 
 @router.get("/documents/{doc_id}")
-async def get_document(doc_id: str, db: AsyncSession = Depends(get_db)):
+async def get_document(doc_id: str, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     result = await db.execute(select(DocumentModel).where(DocumentModel.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
@@ -148,7 +167,7 @@ async def get_document(doc_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/cards", response_model=CardResponse)
-async def create_card(card: CardCreate, db: AsyncSession = Depends(get_db)):
+async def create_card(card: CardCreate, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     db_card = CardModel(
         id=str(uuid.uuid4()),
         question=card.question,
@@ -172,14 +191,14 @@ async def create_card(card: CardCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/cards", response_model=list[CardResponse])
-async def list_cards(db: AsyncSession = Depends(get_db)):
+async def list_cards(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     result = await db.execute(select(CardModel))
     cards = result.scalars().all()
     return [_card_to_response(c) for c in cards]
 
 
 @router.patch("/cards/{card_id}", response_model=CardResponse)
-async def update_card(card_id: str, update: CardUpdate, db: AsyncSession = Depends(get_db)):
+async def update_card(card_id: str, update: CardUpdate, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     result = await db.execute(select(CardModel).where(CardModel.id == card_id))
     card = result.scalar_one_or_none()
     if not card:
@@ -216,7 +235,7 @@ async def update_card(card_id: str, update: CardUpdate, db: AsyncSession = Depen
 
 
 @router.delete("/cards/{card_id}", status_code=204)
-async def delete_card(card_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_card(card_id: str, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     result = await db.execute(select(CardModel).where(CardModel.id == card_id))
     card = result.scalar_one_or_none()
     if not card:
@@ -226,7 +245,7 @@ async def delete_card(card_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/cards/{card_id}/answer", response_model=AnswerResult)
-async def submit_answer(card_id: str, body: AnswerSubmission, db: AsyncSession = Depends(get_db)):
+async def submit_answer(card_id: str, body: AnswerSubmission, db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     result = await db.execute(select(CardModel).where(CardModel.id == card_id))
     card = result.scalar_one_or_none()
     if not card:
@@ -272,14 +291,14 @@ async def submit_answer(card_id: str, body: AnswerSubmission, db: AsyncSession =
 
 
 @router.get("/state")
-async def get_state(db: AsyncSession = Depends(get_db)):
+async def get_state(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     result = await db.execute(select(GlobalStateModel).where(GlobalStateModel.id == 1))
     state = result.scalar_one_or_none()
     return {"turnCounter": state.turn_counter if state else 0}
 
 
 @router.get("/stats", response_model=StatsResponse)
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats(db: AsyncSession = Depends(get_db), _auth: None = Depends(require_auth)):
     # Load all study events
     ev_result = await db.execute(
         select(StudyEventModel).order_by(StudyEventModel.answered_at)

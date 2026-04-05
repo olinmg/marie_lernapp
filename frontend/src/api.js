@@ -1,5 +1,17 @@
 const BASE = '/api'
 
+let _token = null
+
+export function setAuthToken(token) {
+  _token = token
+}
+
+function authHeaders(extra = {}) {
+  const h = { ...extra }
+  if (_token) h['Authorization'] = `Bearer ${_token}`
+  return h
+}
+
 export async function generateCards(file, cardCount, answerCount, minCorrect, maxCorrect, hardRatio, onProgress) {
   const form = new FormData()
   form.append('file', file)
@@ -9,7 +21,7 @@ export async function generateCards(file, cardCount, answerCount, minCorrect, ma
   form.append('max_correct', maxCorrect)
   form.append('hard_ratio', hardRatio)
 
-  const res = await fetch(`${BASE}/generate`, { method: 'POST', body: form })
+  const res = await fetch(`${BASE}/generate`, { method: 'POST', body: form, headers: authHeaders() })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || 'Generation failed')
@@ -51,12 +63,15 @@ export async function generateCards(file, cardCount, answerCount, minCorrect, ma
   return res.json() // { documentId, cards }
 }
 
-export function getDocumentUrl(documentId) {
-  return `${BASE}/documents/${documentId}`
+export async function fetchDocumentBlobUrl(documentId) {
+  const res = await fetch(`${BASE}/documents/${documentId}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('Failed to fetch document')
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
 }
 
 export async function fetchCards() {
-  const res = await fetch(`${BASE}/cards`)
+  const res = await fetch(`${BASE}/cards`, { headers: authHeaders() })
   if (!res.ok) throw new Error('Failed to fetch cards')
   return res.json()
 }
@@ -64,7 +79,7 @@ export async function fetchCards() {
 export async function createCard(card) {
   const res = await fetch(`${BASE}/cards`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(card),
   })
   if (!res.ok) throw new Error('Failed to create card')
@@ -74,7 +89,7 @@ export async function createCard(card) {
 export async function updateCard(id, patch) {
   const res = await fetch(`${BASE}/cards/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(patch),
   })
   if (!res.ok) throw new Error('Failed to update card')
@@ -82,14 +97,14 @@ export async function updateCard(id, patch) {
 }
 
 export async function deleteCard(id) {
-  const res = await fetch(`${BASE}/cards/${id}`, { method: 'DELETE' })
+  const res = await fetch(`${BASE}/cards/${id}`, { method: 'DELETE', headers: authHeaders() })
   if (!res.ok) throw new Error('Failed to delete card')
 }
 
 export async function submitAnswer(cardId, { isCorrect, responseTimeMs, answerCount }) {
   const res = await fetch(`${BASE}/cards/${cardId}/answer`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ isCorrect, responseTimeMs, answerCount }),
   })
   if (!res.ok) throw new Error('Failed to submit answer')
@@ -97,13 +112,13 @@ export async function submitAnswer(cardId, { isCorrect, responseTimeMs, answerCo
 }
 
 export async function fetchState() {
-  const res = await fetch(`${BASE}/state`)
+  const res = await fetch(`${BASE}/state`, { headers: authHeaders() })
   if (!res.ok) throw new Error('Failed to fetch state')
   return res.json()
 }
 
 export async function fetchStats() {
-  const res = await fetch(`${BASE}/stats`)
+  const res = await fetch(`${BASE}/stats`, { headers: authHeaders() })
   if (!res.ok) throw new Error('Failed to fetch stats')
   return res.json()
 }

@@ -172,7 +172,7 @@ export default function StudyPage() {
   const handleNext = () => {
     // Intermission check
     if (sessionTotal > 0 && sessionTotal % 25 === 0) {
-      const includeImage = imagesList.length > 0 && Math.random() <= 0.35 // 35% chance
+      const includeImage = imagesList.length > 0 && Math.random() <= 0.50 // 50% chance
       const imgTarget = includeImage ? imagesList[Math.floor(Math.random() * imagesList.length)] : null
       
       setIntermissionData({

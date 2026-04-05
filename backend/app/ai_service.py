@@ -6,7 +6,7 @@ import asyncio
 import time as _time
 from typing import AsyncGenerator
 
-import anthropic
+from openai import OpenAI
 
 DIFFICULTY_PROMPTS = {
     "normal": "Clear, direct questions testing basic comprehension and recall of key concepts. Questions should be unambiguous and fair.",
@@ -24,28 +24,60 @@ IMAGE_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 CHUNK_SIZE = 25  # max questions per LLM call
 MIN_PAGES_FOR_CHUNKING = 20
 
-# Rate-limit-aware scheduling
-TOKENS_PER_PDF_PAGE = 2000    # rough avg input tokens per PDF page
-PROMPT_OVERHEAD_TOKENS = 600  # estimated tokens for the system/user text
-RATE_LIMIT_TPM = 30_000       # Anthropic org rate limit (input tokens/min)
-SAFETY_FACTOR = 0.80          # use 80% of budget to stay safe
+# Token estimation
+CHARS_PER_TOKEN = 4  # rough approximation for English text
+MAX_INPUT_TOKENS = 100_000  # conservative context budget for document text
+
+# Rate-limit-aware scheduling (TPM configurable via env)
+PROMPT_OVERHEAD_TOKENS = 600
+RATE_LIMIT_TPM = int(os.getenv("OPENAI_RATE_LIMIT_TPM", "200000"))
+SAFETY_FACTOR = 0.80
 EFFECTIVE_TPM = int(RATE_LIMIT_TPM * SAFETY_FACTOR)
 
+MODEL = "gpt-4.1"
 
-def _build_content_block(file_bytes: bytes, media_type: str) -> dict:
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_client() -> OpenAI:
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable is not set")
+    return OpenAI(api_key=api_key)
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token count from character length."""
+    return max(1, len(text) // CHARS_PER_TOKEN)
+
+
+def _extract_pdf_text(file_bytes: bytes) -> list[tuple[int, str]]:
+    """Extract text from every PDF page.  Returns [(1-indexed page, text), ...]."""
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(file_bytes))
+    return [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
+
+
+def _format_page_text(pages: list[tuple[int, str]]) -> str:
+    """Join extracted page texts with clear page markers."""
+    parts = []
+    for page_num, text in pages:
+        text = text.strip()
+        if text:
+            parts.append(f"--- Page {page_num} ---\n{text}")
+    return "\n\n".join(parts)
+
+
+def _build_image_content(file_bytes: bytes, media_type: str) -> list[dict]:
+    """Build OpenAI vision content blocks for an image."""
     import base64
     data = base64.standard_b64encode(file_bytes).decode("ascii")
-
-    if media_type == PDF_MEDIA_TYPE:
-        return {
-            "type": "document",
-            "source": {"type": "base64", "media_type": PDF_MEDIA_TYPE, "data": data},
-        }
-    else:
-        return {
-            "type": "image",
-            "source": {"type": "base64", "media_type": media_type, "data": data},
-        }
+    return [
+        {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{data}"}},
+        {"type": "text", "text": "Generate flashcards from this image."},
+    ]
 
 
 def _parse_json_response(raw_text: str) -> list[dict]:
@@ -59,6 +91,75 @@ def _parse_json_response(raw_text: str) -> list[dict]:
     return json.loads(raw_text)
 
 
+def _build_system_prompt(
+    card_count: int,
+    answer_count: int,
+    min_correct: int,
+    max_correct: int,
+    difficulty: str,
+    page_range: tuple[int, int] | None = None,
+) -> str:
+    label = DIFFICULTY_LABELS.get(difficulty, "Normal")
+    instruction = DIFFICULTY_PROMPTS.get(difficulty, DIFFICULTY_PROMPTS["normal"])
+
+    page_note = ""
+    if page_range:
+        page_note = (
+            f"\nIMPORTANT: The text below covers pages {page_range[0]}–{page_range[1]} "
+            f"of the original document. All sourceRef page numbers MUST refer to the "
+            f"original document page numbers.\n"
+        )
+
+    return (
+        f"You are a flashcard generator. Analyze the provided content carefully and "
+        f"generate exactly {card_count} multiple-choice questions.\n"
+        f"{page_note}\n"
+        f"Difficulty level: {label}\n"
+        f"Difficulty instruction: {instruction}\n\n"
+        f"Additional rules:\n"
+        f"- Each question must have exactly {answer_count} answer options\n"
+        f"- For each question, randomly choose the number of correct answers uniformly "
+        f"from {min_correct} to {max_correct} (inclusive). Distribute evenly across the "
+        f"set — roughly equal numbers of questions for each possible correct-answer count\n"
+        f"- For each answer option, provide a short 'explanation' field (1-2 sentences) "
+        f"explaining WHY this answer is correct or WHY it is wrong\n"
+        f'- For sourceRef, give a precise location (e.g. "Page 3 – Introduction", '
+        f'"Section 2.1", "Paragraph about X")\n\n'
+        f"Respond ONLY with a raw JSON array. No markdown fences, no explanation:\n"
+        f'[{{"question":"...","answers":[{{"text":"...","isCorrect":true,"explanation":"..."}},'
+        f'{{"text":"...","isCorrect":false,"explanation":"..."}}],"sourceRef":"..."}}]'
+    )
+
+
+async def _call_llm(system_prompt: str, user_content) -> str:
+    """Call OpenAI Chat Completions in a background thread.  Returns raw text."""
+    client = _get_client()
+
+    if isinstance(user_content, str):
+        user_msg = {"role": "user", "content": user_content}
+    else:
+        # list of content blocks (image + text)
+        user_msg = {"role": "user", "content": user_content}
+
+    loop = asyncio.get_running_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: client.chat.completions.create(
+            model=MODEL,
+            max_tokens=16384,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                user_msg,
+            ],
+        ),
+    )
+    return response.choices[0].message.content.strip()
+
+
+# ---------------------------------------------------------------------------
+# Single-call generation
+# ---------------------------------------------------------------------------
+
 async def _generate_single_difficulty(
     file_bytes: bytes,
     media_type: str,
@@ -68,51 +169,18 @@ async def _generate_single_difficulty(
     max_correct: int,
     difficulty: str,
 ) -> list[dict]:
-    """Generate cards for a single difficulty level (simple, non-chunked)."""
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
-
-    label = DIFFICULTY_LABELS.get(difficulty, "Normal")
-    instruction = DIFFICULTY_PROMPTS.get(difficulty, DIFFICULTY_PROMPTS["normal"])
-
-    system_prompt = (
-        f"You are a flashcard generator. Analyze the provided content carefully and generate exactly {card_count} multiple-choice questions.\n\n"
-        f"Difficulty level: {label}\n"
-        f"Difficulty instruction: {instruction}\n\n"
-        f"Additional rules:\n"
-        f"- Each question must have exactly {answer_count} answer options\n"
-        f"- For each question, randomly choose the number of correct answers uniformly from {min_correct} to {max_correct} (inclusive). Distribute evenly across the set — roughly equal numbers of questions for each possible correct-answer count)\n"
-        f"- For each answer option, provide a short 'explanation' field (1-2 sentences) explaining WHY this answer is correct or WHY it is wrong\n"
-        f'- For sourceRef, give a precise location (e.g. "Page 3 – Introduction", "Section 2.1", "Paragraph about X")\n\n'
-        f"Respond ONLY with a raw JSON array. No markdown fences, no explanation:\n"
-        f'[{{"question":"...","answers":[{{"text":"...","isCorrect":true,"explanation":"..."}},{{"text":"...","isCorrect":false,"explanation":"..."}}],"sourceRef":"..."}}]'
+    """Generate cards for a single difficulty level (non-chunked)."""
+    system_prompt = _build_system_prompt(
+        card_count, answer_count, min_correct, max_correct, difficulty,
     )
 
-    content_block = _build_content_block(file_bytes, media_type)
-
-    extra_headers = {}
     if media_type == PDF_MEDIA_TYPE:
-        extra_headers["anthropic-beta"] = "pdfs-2024-09-25"
+        pages = _extract_pdf_text(file_bytes)
+        user_content = _format_page_text(pages)
+    else:
+        user_content = _build_image_content(file_bytes, media_type)
 
-    client = anthropic.Anthropic(api_key=api_key)
-
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=16384,
-        extra_headers=extra_headers if extra_headers else None,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    content_block,
-                    {"type": "text", "text": system_prompt},
-                ],
-            }
-        ],
-    )
-
-    raw_text = message.content[0].text.strip()
+    raw_text = await _call_llm(system_prompt, user_content)
     return _parse_json_response(raw_text)
 
 
@@ -168,41 +236,29 @@ def count_pdf_pages(file_bytes: bytes) -> int:
     return len(reader.pages)
 
 
-def split_pdf(file_bytes: bytes, num_sections: int) -> list[tuple[bytes, int, int]]:
-    """Split a PDF into *num_sections* roughly-equal parts.
-
-    Returns a list of (section_bytes, start_page, end_page) where pages
-    are 1-indexed and refer to the original document.
-    """
-    from pypdf import PdfReader, PdfWriter
-
-    reader = PdfReader(io.BytesIO(file_bytes))
-    total = len(reader.pages)
-    base_size = total // num_sections
-    remainder = total % num_sections
-
-    sections: list[tuple[bytes, int, int]] = []
+def _group_pages(
+    pages: list[tuple[int, str]], num_groups: int,
+) -> list[list[tuple[int, str]]]:
+    """Split pages into *num_groups* roughly-equal contiguous groups."""
+    total = len(pages)
+    base = total // num_groups
+    remainder = total % num_groups
+    groups: list[list[tuple[int, str]]] = []
     offset = 0
-    for i in range(num_sections):
-        length = base_size + (1 if i < remainder else 0)
-        writer = PdfWriter()
-        for p in range(offset, offset + length):
-            writer.add_page(reader.pages[p])
-        buf = io.BytesIO()
-        writer.write(buf)
-        sections.append((buf.getvalue(), offset + 1, offset + length))  # 1-indexed
+    for i in range(num_groups):
+        length = base + (1 if i < remainder else 0)
+        groups.append(pages[offset : offset + length])
         offset += length
-
-    return sections
+    return groups
 
 
 # ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
 
-def _estimate_chunk_tokens(page_count: int) -> int:
-    """Rough estimate of input tokens for a PDF chunk sent to Anthropic."""
-    return page_count * TOKENS_PER_PDF_PAGE + PROMPT_OVERHEAD_TOKENS
+def _estimate_chunk_tokens(text: str) -> int:
+    """Estimate input tokens for a text chunk sent to OpenAI."""
+    return _estimate_tokens(text) + PROMPT_OVERHEAD_TOKENS
 
 
 class _TokenRateLimiter:
@@ -233,81 +289,15 @@ class _TokenRateLimiter:
 
 
 # ---------------------------------------------------------------------------
-# Chunk-level generation (single section → cards)
-# ---------------------------------------------------------------------------
-
-async def _generate_chunk(
-    chunk_bytes: bytes,
-    media_type: str,
-    card_count: int,
-    answer_count: int,
-    min_correct: int,
-    max_correct: int,
-    difficulty: str,
-    page_start: int,
-    page_end: int,
-) -> list[dict]:
-    """Generate cards for one PDF section, running the Anthropic call in a
-    thread so the event loop stays responsive."""
-
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
-
-    label = DIFFICULTY_LABELS.get(difficulty, "Normal")
-    instruction = DIFFICULTY_PROMPTS.get(difficulty, DIFFICULTY_PROMPTS["normal"])
-
-    system_prompt = (
-        f"You are a flashcard generator. Analyze the provided content carefully and generate exactly {card_count} multiple-choice questions.\n\n"
-        f"IMPORTANT: This PDF excerpt contains pages {page_start}–{page_end} of the original document. "
-        f"All sourceRef page numbers MUST refer to the original document page numbers "
-        f"(i.e. page 1 of this excerpt is page {page_start} in the original).\n\n"
-        f"Difficulty level: {label}\n"
-        f"Difficulty instruction: {instruction}\n\n"
-        f"Additional rules:\n"
-        f"- Each question must have exactly {answer_count} answer options\n"
-        f"- For each question, randomly choose the number of correct answers uniformly from {min_correct} to {max_correct} (inclusive). Distribute evenly across the set — roughly equal numbers of questions for each possible correct-answer count)\n"
-        f"- For each answer option, provide a short 'explanation' field (1-2 sentences) explaining WHY this answer is correct or WHY it is wrong\n"
-        f'- For sourceRef, give a precise location referencing the ORIGINAL page numbers (e.g. "Page {page_start} – Introduction", "Page {page_end} – Summary")\n\n'
-        f"Respond ONLY with a raw JSON array. No markdown fences, no explanation:\n"
-        f'[{{"question":"...","answers":[{{"text":"...","isCorrect":true,"explanation":"..."}},{{"text":"...","isCorrect":false,"explanation":"..."}}],"sourceRef":"..."}}]'
-    )
-
-    content_block = _build_content_block(chunk_bytes, media_type)
-    extra_headers = {"anthropic-beta": "pdfs-2024-09-25"}
-    client = anthropic.Anthropic(api_key=api_key)
-
-    loop = asyncio.get_running_loop()
-    message = await loop.run_in_executor(
-        None,
-        lambda: client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=16384,
-            extra_headers=extra_headers,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        content_block,
-                        {"type": "text", "text": system_prompt},
-                    ],
-                }
-            ],
-        ),
-    )
-
-    raw_text = message.content[0].text.strip()
-    return _parse_json_response(raw_text)
-
-
-# ---------------------------------------------------------------------------
 # Chunked generation with SSE progress
 # ---------------------------------------------------------------------------
 
 def needs_chunking(media_type: str, card_count: int, file_bytes: bytes) -> bool:
     if media_type != PDF_MEDIA_TYPE or card_count <= CHUNK_SIZE:
         return False
-    return count_pdf_pages(file_bytes) > MIN_PAGES_FOR_CHUNKING
+    pages = _extract_pdf_text(file_bytes)
+    total_tokens = sum(_estimate_tokens(text) for _, text in pages)
+    return total_tokens > MAX_INPUT_TOKENS or len(pages) > MIN_PAGES_FOR_CHUNKING
 
 
 async def generate_cards_chunked(
@@ -322,10 +312,8 @@ async def generate_cards_chunked(
 ) -> AsyncGenerator[str, None]:
     """Yield SSE-formatted events as chunks complete.
 
-    Chunks are processed **sequentially** with a sliding-window token rate
-    limiter so we never exceed the Anthropic 30 k input-tokens/min limit.
-    Each progress event includes an ETA so the frontend can show a
-    meaningful timer.
+    Text is extracted from the PDF up-front, grouped into page chunks,
+    and sent **sequentially** with rate limiting.
     """
 
     normal_count, hard_count = _split_by_ratio(card_count, hard_ratio)
@@ -336,31 +324,29 @@ async def generate_cards_chunked(
     if hard_count > 0:
         batches.append(("hard", hard_count))
 
-    # Build ordered list of chunk definitions
-    ChunkDef = tuple  # (chunk_bytes, start, end, q_count, difficulty, est_tokens)
-    chunks: list[ChunkDef] = []
+    # Extract text once
+    all_pages = _extract_pdf_text(file_bytes)
+
+    # Build ordered chunk definitions: (text, page_start, page_end, q_count, difficulty, est_tokens)
+    chunks: list[tuple] = []
 
     for difficulty, count in batches:
         num_sections = math.ceil(count / CHUNK_SIZE)
-        sections = split_pdf(file_bytes, num_sections)
+        groups = _group_pages(all_pages, num_sections)
 
         base_q = count // num_sections
         extra_q = count % num_sections
-        questions_per_section = [
-            base_q + (1 if i < extra_q else 0) for i in range(num_sections)
-        ]
+        qs_per = [base_q + (1 if i < extra_q else 0) for i in range(num_sections)]
 
-        for idx, (chunk_bytes_sec, start, end) in enumerate(sections):
-            page_count = end - start + 1
-            est_tokens = _estimate_chunk_tokens(page_count)
-            chunks.append(
-                (chunk_bytes_sec, start, end,
-                 questions_per_section[idx], difficulty, est_tokens)
-            )
+        for idx, group in enumerate(groups):
+            text = _format_page_text(group)
+            est_tokens = _estimate_chunk_tokens(text)
+            page_start = group[0][0] if group else 1
+            page_end = group[-1][0] if group else 1
+            chunks.append((text, page_start, page_end, qs_per[idx], difficulty, est_tokens))
 
     total_sections = len(chunks)
     total_tokens = sum(c[5] for c in chunks)
-    # Pre-compute a rough ETA (seconds) based on token budget
     estimated_total_seconds = max(30, (total_tokens / EFFECTIVE_TPM) * 60)
 
     limiter = _TokenRateLimiter(EFFECTIVE_TPM)
@@ -374,25 +360,24 @@ async def generate_cards_chunked(
     # Initial progress
     yield _progress_event(estimated_total_seconds)
 
-    for chunk_bytes_sec, start, end, q_count, difficulty, est_tokens in chunks:
-        # Respect rate limit – may sleep here
+    for text, page_start, page_end, q_count, difficulty, est_tokens in chunks:
         await limiter.acquire(est_tokens)
 
-        chunk_cards = await _generate_chunk(
-            chunk_bytes_sec, media_type, q_count,
-            answer_count, min_correct, max_correct, difficulty,
-            start, end,
+        system_prompt = _build_system_prompt(
+            q_count, answer_count, min_correct, max_correct, difficulty,
+            page_range=(page_start, page_end),
         )
+        raw = await _call_llm(system_prompt, text)
+        chunk_cards = _parse_json_response(raw)
+
         for c in chunk_cards:
             c["difficulty"] = difficulty
         all_cards.extend(chunk_cards)
         completed += 1
 
-        # Compute ETA from observed pace
         elapsed = _time.monotonic() - start_wall
         if completed < total_sections:
-            avg_per_chunk = elapsed / completed
-            remaining = avg_per_chunk * (total_sections - completed)
+            remaining = (elapsed / completed) * (total_sections - completed)
         else:
             remaining = 0
 

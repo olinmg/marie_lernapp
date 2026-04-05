@@ -1,5 +1,6 @@
+import { useState, useEffect } from 'react'
 import { FileText, Lock } from 'lucide-react'
-import { getDocumentUrl } from '../api'
+import { fetchDocumentBlobUrl } from '../api'
 
 function parsePageNumber(sourceRef) {
   if (!sourceRef) return null
@@ -8,6 +9,17 @@ function parsePageNumber(sourceRef) {
 }
 
 export default function DocumentPreview({ documentId, sourceRef, revealed }) {
+  const [blobUrl, setBlobUrl] = useState(null)
+
+  useEffect(() => {
+    if (!documentId) return
+    let revoked = false
+    fetchDocumentBlobUrl(documentId).then((url) => {
+      if (!revoked) setBlobUrl(url)
+    })
+    return () => { revoked = true; if (blobUrl) URL.revokeObjectURL(blobUrl) }
+  }, [documentId])
+
   if (!documentId) {
     return (
       <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
@@ -19,9 +31,8 @@ export default function DocumentPreview({ documentId, sourceRef, revealed }) {
     )
   }
 
-  const url = getDocumentUrl(documentId)
   const page = parsePageNumber(sourceRef)
-  const displayUrl = revealed && page ? `${url}#page=${page}` : url
+  const displayUrl = blobUrl ? (revealed && page ? `${blobUrl}#page=${page}` : blobUrl) : ''
 
   return (
     <div className="h-full flex flex-col">

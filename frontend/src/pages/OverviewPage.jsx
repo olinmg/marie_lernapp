@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { fetchCards, deleteCard, getDocumentUrl, fetchStats } from '../api'
+import { fetchCards, deleteCard, fetchDocumentBlobUrl, fetchStats } from '../api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -342,6 +342,7 @@ export default function OverviewPage() {
   const [sortBy, setSortBy] = useState('page')
   const [openIds, setOpenIds] = useState(new Set())
   const [evidenceCard, setEvidenceCard] = useState(null)
+  const [evidenceUrl, setEvidenceUrl] = useState(null)
   const [deleteId, setDeleteId] = useState(null)
   const [stats, setStats] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -393,6 +394,17 @@ export default function OverviewPage() {
     setEvidenceCard(prev => prev?.id === card.id ? null : card)
   }
 
+  useEffect(() => {
+    if (!evidenceCard?.documentId) { setEvidenceUrl(null); return }
+    let revoked = false
+    fetchDocumentBlobUrl(evidenceCard.documentId).then((url) => {
+      if (revoked) return
+      const page = parsePageNumber(evidenceCard.sourceRef)
+      setEvidenceUrl(page ? `${url}#page=${page}` : url)
+    })
+    return () => { revoked = true }
+  }, [evidenceCard])
+
   if (loading) {
     return (
       <div className="max-w-5xl mx-auto w-full text-center text-muted-foreground">
@@ -401,12 +413,6 @@ export default function OverviewPage() {
       </div>
     )
   }
-
-  const evidenceUrl = evidenceCard ? (() => {
-    const base = getDocumentUrl(evidenceCard.documentId)
-    const page = parsePageNumber(evidenceCard.sourceRef)
-    return page ? `${base}#page=${page}` : base
-  })() : null
 
   return (
     <div className="max-w-5xl mx-auto w-full space-y-5">
