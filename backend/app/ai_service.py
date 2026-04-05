@@ -34,7 +34,7 @@ RATE_LIMIT_TPM = int(os.getenv("OPENAI_RATE_LIMIT_TPM", "200000"))
 SAFETY_FACTOR = 0.80
 EFFECTIVE_TPM = int(RATE_LIMIT_TPM * SAFETY_FACTOR)
 
-MODEL = "gpt-4.1"
+MODEL = "gpt-5.4"
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ async def _call_llm(system_prompt: str, user_content) -> str:
         None,
         lambda: client.chat.completions.create(
             model=MODEL,
-            max_tokens=16384,
+            max_completion_tokens=16384,
             messages=[
                 {"role": "system", "content": system_prompt},
                 user_msg,
