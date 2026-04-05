@@ -22,13 +22,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="FlashLearn API", lifespan=lifespan)
 
-_default_origins = ["http://localhost:5173", "http://localhost:3000", "http://localhost:3001", "http://localhost"]
-_extra = os.getenv("CORS_ORIGINS", "")  # comma-separated extra origins
-cors_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
+raw = os.getenv("CORS_ORIGINS", "")
+print(f"Raw CORS_ORIGINS env var: '{raw}'")
+cors_origins = [o.strip() for o in raw.split(",") if o.strip()]
+print(f"Parsed CORS origins: {cors_origins}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"https://.*\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
