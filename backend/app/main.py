@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from dotenv import load_dotenv
@@ -18,9 +19,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="FlashLearn API", lifespan=lifespan)
 
+_default_origins = ["http://localhost:5173", "http://localhost:3000", "http://localhost:3001", "http://localhost"]
+_extra = os.getenv("CORS_ORIGINS", "")  # comma-separated extra origins
+cors_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:3001", "http://localhost"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
